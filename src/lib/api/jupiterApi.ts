@@ -1,5 +1,5 @@
 import { NormalizedTrade } from "@/types/types";
-import { isValidSolanaAddress } from "@/lib/walletValidation";
+import { isValidSolanaAddress } from "@/lib/utils/validation";
 
 export const fetchAllJupiterTradeHistory = async (
   address: string,

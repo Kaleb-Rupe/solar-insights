@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { JupiterTrade } from "@/core/schemas";
-import { NormalizedTrade } from "@/types/types";
-import { normalizeJupiterTrade } from "@/services/exchanges/jupiter/normalize";
+import { SolanaAddressSchema } from "@/core/schemas/trader.schema";
+import { JupiterTradesResponseSchema } from "@/core/schemas/exchange.schema";
+import { ZodError } from "zod";
 
 export async function GET(request: NextRequest) {
   try {
@@ -14,6 +14,19 @@ export async function GET(request: NextRequest) {
         { error: "Wallet address required" },
         { status: 400 }
       );
+    }
+
+    // Validate address format
+    try {
+      SolanaAddressSchema.parse(address);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        return NextResponse.json(
+          { error: "Invalid Solana address format", details: error.errors },
+          { status: 400 }
+        );
+      }
+      throw error;
     }
 
     const jupiterApiBaseUrl = process.env.JUPITER_API_BASE_URL;
@@ -29,6 +42,7 @@ export async function GET(request: NextRequest) {
       `${jupiterApiBaseUrl}/trades?walletAddress=${address}&start=${start}&end=${end}`,
       { next: { revalidate: 300 } }
     );
+
     if (!jupiterResponse.ok) {
       return NextResponse.json(
         { error: `Jupiter API returned ${jupiterResponse.status}` },
@@ -36,18 +50,25 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const jupiterData: { dataList: JupiterTrade[]; count: number } =
-      await jupiterResponse.json();
+    const rawData = await jupiterResponse.json();
 
-    // Normalize Jupiter trades
-    const normalizedTrades: NormalizedTrade[] = jupiterData.dataList.map(
-      (trade) => normalizeJupiterTrade(trade)
-    );
-
-    return NextResponse.json({
-      dataList: normalizedTrades,
-      count: jupiterData.count,
-    });
+    // Validate response against schema
+    try {
+      const validatedData = JupiterTradesResponseSchema.parse(rawData);
+      return NextResponse.json(validatedData);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        console.error("Jupiter API response validation error:", error.errors);
+        return NextResponse.json(
+          {
+            error: "Invalid response format from Jupiter API",
+            details: error.errors,
+          },
+          { status: 500 }
+        );
+      }
+      throw error;
+    }
   } catch (error) {
     console.error("Jupiter trades error:", error);
     return NextResponse.json(

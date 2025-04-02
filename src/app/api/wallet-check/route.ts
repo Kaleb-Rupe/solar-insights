@@ -1,13 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
+import { SolanaAddressSchema } from "@/core/schemas/trader.schema";
+import { ZodError } from "zod";
 
 export async function GET(request: NextRequest) {
   try {
     const address = request.nextUrl.searchParams.get("address");
+
     if (!address) {
       return NextResponse.json(
         { error: "Wallet address required" },
         { status: 400 }
       );
+    }
+
+    // Validate address format using Zod schema
+    try {
+      SolanaAddressSchema.parse(address);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        return NextResponse.json(
+          { error: "Invalid Solana address format", details: error.errors },
+          { status: 400 }
+        );
+      }
+      throw error;
     }
 
     const jupiterApiBaseUrl = process.env.JUPITER_API_BASE_URL;
@@ -55,7 +71,11 @@ export async function GET(request: NextRequest) {
       ...(hasFlashData ? ["Flash"] : []),
     ];
 
-    return NextResponse.json({ hasData, availableExchanges });
+    return NextResponse.json({
+      hasData,
+      availableExchanges,
+      lastChecked: Date.now(),
+    });
   } catch (error) {
     console.error("Wallet check error:", error);
     return NextResponse.json(

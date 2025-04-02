@@ -1,6 +1,6 @@
-import { MARKETS } from "@/core/markets/index";
-import { FlashTrade, JupiterTrade } from "@/core/schemas/index";
-import { NormalizedTrade } from "@/types/types";
+import { MARKETS } from "@/core/domain/markets";
+import { FlashTrade, JupiterTrade } from "@/core/schemas/exchange.schema";
+import { NormalizedTrade } from "@/core/schemas/trade.schema";
 
 /**
  * Formats a market value based on the market's denomination
@@ -8,7 +8,7 @@ import { NormalizedTrade } from "@/types/types";
  * @param market The market address
  * @returns Formatted value
  */
-export const formatMarketValue = (value: string | number, market: string) => {
+export const formatMarketValue = (value: string | number, market: string): number => {
   const marketInfo = MARKETS[market];
   if (!marketInfo) {
     console.error(`Unknown market: ${market}`);
@@ -40,7 +40,7 @@ const hasConsecutiveThreeZeros = (value: number): boolean => {
  * @param value The number to format
  * @returns Formatted currency string
  */
-export const formatCurrency = (value: number) => {
+export const formatCurrency = (value: number): string => {
   if (hasConsecutiveThreeZeros(value)) {
     return value.toLocaleString("en-US", {
       style: "currency",
@@ -195,16 +195,16 @@ export const mapFlashTradeAction = (
   tradeType: FlashTrade["tradeType"]
 ): NormalizedTrade["action"] => {
   const actionMap: { [key: string]: NormalizedTrade["action"] } = {
-    OPEN_POSITION: "open",
-    CLOSE_POSITION: "close",
-    INCREASE_SIZE: "increase",
-    DECREASE_SIZE: "decrease",
-    LIQUIDATE: "liquidate",
-    ADD_COLLATERAL: "add_collateral",
-    REMOVE_COLLATERAL: "remove_collateral",
-    TAKE_PROFIT: "take_profit",
-    STOP_LOSS: "stop_loss",
-    OPEN_LIMIT_ORDER_POSITION: "open_limit_order",
+    OPEN_POSITION: { type: "open" },
+    CLOSE_POSITION: { type: "close", pnl: 0 },
+    INCREASE_SIZE: { type: "increase", additionalCollateral: 0 },
+    DECREASE_SIZE: { type: "decrease", withdrawnCollateral: 0 },
+    LIQUIDATE: { type: "liquidate" },
+    ADD_COLLATERAL: { type: "add_collateral", amount: 0 },
+    REMOVE_COLLATERAL: { type: "remove_collateral", amount: 0 },
+    TAKE_PROFIT: { type: "take_profit", targetPrice: 0 },
+    STOP_LOSS: { type: "stop_loss", triggerPrice: 0 },
+    OPEN_LIMIT_ORDER_POSITION: { type: "open_limit_order", limitPrice: 0 },
   };
 
   return actionMap[tradeType] || "unknown";
@@ -215,20 +215,22 @@ export const mapFlashTradeAction = (
  * @param trade Jupiter trade to map
  * @returns Normalized action
  */
-export const mapJupiterTradeType = (trade: JupiterTrade): NormalizedTrade["action"] => {
+export const mapJupiterTradeType = (
+  trade: JupiterTrade
+): NormalizedTrade["action"] => {
   const { action, orderType, pnl } = trade;
-  if (orderType === "Liquidation") return "liquidate";
+  if (orderType === "Liquidation") return { type: "liquidate" };
   if (orderType === "Market") {
-    if (action === "Increase") return "open";
-    if (action === "Decrease") return "close";
+    if (action === "Increase") return { type: "open" };
+    if (action === "Decrease") return { type: "close", pnl: 0 };
   }
   if (orderType === "Trigger") {
     const pnlValue = pnl ? Number(pnl) : 0;
-    if (pnlValue < 0) return "stop_loss";
-    if (pnlValue > 0) return "take_profit";
-    return "close";
+    if (pnlValue < 0) return { type: "stop_loss", triggerPrice: 0 };
+    if (pnlValue > 0) return { type: "take_profit", targetPrice: 0 };
+    return { type: "close", pnl: 0 };
   }
-  return "unknown";
+  return { type: "unknown" };
 };
 
 /**
@@ -262,4 +264,186 @@ export const formatTimestamp = (timestamp: number): string => {
  */
 export const formatPercentage = (value: number, decimals = 2): string => {
   return `${(value * 100).toFixed(decimals)}%`;
+};
+
+/**
+ * Get trade price based on trade data and exchange
+ */
+export const getFlashTradePrice = (trade: FlashTrade): NormalizedTrade["price"] => {
+  const marketInfo = trade.market ? MARKETS[trade.market] : null;
+  if (!marketInfo) {
+    return "0";
+  }
+
+    if (trade.side === "short") {
+      if (trade.exitPrice) {
+        return formatCurrency(
+          Number(trade.exitPrice) * Number(`1e${marketInfo.exponent}`)
+        );
+      } else if (trade.entryPrice) {
+        return formatCurrency(
+          Number(trade.entryPrice) * Number(`1e${marketInfo.exponent}`)
+        );
+      } else if (trade.oraclePrice) {
+        return formatCurrency(
+          Number(trade.oraclePrice) * Number(`1e${marketInfo.exponent}`)
+        );
+      } else if (trade.price) {
+        return formatCurrency(Number(trade.price) * 1e-6);
+      } else if (trade.sizeUsd && trade.sizeAmount) {
+        return formatCurrency(
+          (Number(trade.sizeUsd) * 1e-6) /
+            (Number(trade.sizeAmount) / marketInfo.denomination)
+        );
+      }
+    } else {
+      // Long side
+      if (trade.exitPrice) {
+        return formatCurrency(
+          Number(trade.exitPrice) * Number(`1e${marketInfo.exponent}`)
+        );
+      } else if (
+        trade.price &&
+        (trade.tradeType === "CLOSE_POSITION" ||
+          trade.tradeType === "DECREASE_SIZE" ||
+          trade.tradeType === "REMOVE_COLLATERAL" ||
+          trade.tradeType === "TAKE_PROFIT" ||
+          trade.tradeType === "STOP_LOSS" ||
+          trade.tradeType === "LIQUIDATE")
+      ) {
+        return formatCurrency(Number(trade.price) * 1e-6);
+      } else if (
+        trade.sizeUsd &&
+        trade.sizeAmount &&
+        (trade.tradeType === "CLOSE_POSITION" ||
+          trade.tradeType === "DECREASE_SIZE" ||
+          trade.tradeType === "REMOVE_COLLATERAL" ||
+          trade.tradeType === "TAKE_PROFIT" ||
+          trade.tradeType === "STOP_LOSS" ||
+          trade.tradeType === "LIQUIDATE")
+      ) {
+        formatCurrency(
+          (Number(trade.sizeUsd) * 1e-6) /
+            (Number(trade.sizeAmount) / MARKETS[trade.market].denomination)
+        );
+      } else if (trade.entryPrice) {
+        return formatCurrency(
+          Number(trade.entryPrice) * Number(`1e${marketInfo.exponent}`)
+        );
+      } else if (trade.oraclePrice) {
+        return formatCurrency(
+          Number(trade.oraclePrice) * Number(`1e${marketInfo.exponent}`)
+        );
+      } else if (trade.price) {
+        return formatCurrency(Number(trade.price) * 1e-6);
+      } else if (trade.sizeUsd && trade.sizeAmount) {
+        return formatCurrency(
+          (Number(trade.sizeUsd) * 1e-6) /
+            (Number(trade.sizeAmount) / marketInfo.denomination)
+        );
+      }
+    }
+
+  return "0";
+};
+
+export const getJupiterExitPrice = (
+  trade: JupiterTrade
+): NormalizedTrade["exitPrice"] => {
+  if (trade.orderType === "Market" && trade.action === "Decrease") {
+    return trade.price ? formatCurrency(Number(trade.price)) : "-";
+  } else if (trade.orderType === "Trigger" && trade.action === "Decrease") {
+    return trade.price ? formatCurrency(Number(trade.price)) : "-";
+  } else if (trade.orderType === "Liquidation") {
+    return trade.price ? formatCurrency(Number(trade.price)) : "-";
+  }
+  return "-";
+};
+
+export const getJupiterEntryPrice = (
+  trade: JupiterTrade
+): NormalizedTrade["entryPrice"] => {
+  if (trade.orderType === "Market" && trade.action === "Increase") {
+    return trade.price ? formatCurrency(Number(trade.price)) : "-";
+  }
+  return "-";
+};
+
+/**
+ * Get trade entry price based on trade data and exchange
+ */
+export const getFlashEntryPrice = (
+  trade: FlashTrade
+): NormalizedTrade["entryPrice"] => {
+  const marketInfo = trade.market ? MARKETS[trade.market] : null;
+  if (!marketInfo) {
+    return "-";
+  }
+
+  if (trade.entryPrice) {
+    return formatCurrency(
+      Number(trade.entryPrice) * Number(`1e${MARKETS[trade.market].exponent}`)
+    );
+  } else if (
+    trade.oraclePrice &&
+    (trade.tradeType === "OPEN_POSITION" ||
+      trade.tradeType === "INCREASE_SIZE" ||
+      trade.tradeType === "ADD_COLLATERAL" ||
+      trade.tradeType === "OPEN_LIMIT_ORDER_POSITION")
+  ) {
+    formatCurrency(
+      Number(trade.oraclePrice) * Number(`1e${MARKETS[trade.market].exponent}`)
+    );
+  } else if (trade.price) {
+    return formatCurrency(Number(trade.price) * 1e-6);
+  } else if (trade.sizeUsd && trade.sizeAmount) {
+    return formatCurrency(
+      (Number(trade.sizeUsd) * 1e-6) /
+        (Number(trade.sizeAmount) / MARKETS[trade.market].denomination)
+    );
+  }
+
+  return "-";
+};
+
+/**
+ * Get trade exit price based on trade data and exchange
+ */
+export const getFlashExitPrice = (
+  trade: FlashTrade
+): NormalizedTrade["exitPrice"] => {
+  const marketInfo = trade.market ? MARKETS[trade.market] : null;
+  if (!marketInfo) {
+    return "-";
+  }
+
+  if (trade.exitPrice) {
+    return formatCurrency(
+      Number(trade.exitPrice) * Number(`1e${MARKETS[trade.market].exponent}`)
+    );
+  } else if (
+    trade.oraclePrice &&
+    (trade.tradeType === "CLOSE_POSITION" ||
+      trade.tradeType === "DECREASE_SIZE" ||
+      trade.tradeType === "REMOVE_COLLATERAL" ||
+      trade.tradeType === "TAKE_PROFIT" ||
+      trade.tradeType === "STOP_LOSS" ||
+      trade.tradeType === "LIQUIDATE")
+  ) {
+    formatCurrency(
+      Number(trade.oraclePrice) * Number(`1e${MARKETS[trade.market].exponent}`)
+    );
+  } else if (
+    trade.price &&
+    (trade.tradeType === "CLOSE_POSITION" ||
+      trade.tradeType === "DECREASE_SIZE" ||
+      trade.tradeType === "REMOVE_COLLATERAL" ||
+      trade.tradeType === "TAKE_PROFIT" ||
+      trade.tradeType === "STOP_LOSS" ||
+      trade.tradeType === "LIQUIDATE")
+  ) {
+    return formatCurrency(Number(trade.price) * 1e-6);
+  }
+
+  return "-";
 };

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { FlashTrade } from "@/core/schemas";
-import { NormalizedTrade } from "@/types/types";
-import { normalizeFlashTrade } from "@/services/exchanges/flash/normalize";
+import { SolanaAddressSchema } from "@/core/schemas/trader.schema";
+import { FlashTradesResponseSchema } from "@/core/schemas/exchange.schema";
+import { ZodError } from "zod";
 
 export async function GET(request: NextRequest) {
   try {
@@ -14,6 +14,19 @@ export async function GET(request: NextRequest) {
         { error: "Wallet address required" },
         { status: 400 }
       );
+    }
+
+    // Validate address format
+    try {
+      SolanaAddressSchema.parse(address);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        return NextResponse.json(
+          { error: "Invalid Solana address format", details: error.errors },
+          { status: 400 }
+        );
+      }
+      throw error;
     }
 
     const flashApiBaseUrl = process.env.API_BASE_URL;
@@ -33,6 +46,7 @@ export async function GET(request: NextRequest) {
     }
 
     const flashResponse = await fetch(flashUrl, { next: { revalidate: 300 } });
+
     if (!flashResponse.ok) {
       return NextResponse.json(
         { error: `Flash API returned ${flashResponse.status}` },
@@ -40,14 +54,25 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const flashData: FlashTrade[] = await flashResponse.json();
+    const rawData = await flashResponse.json();
 
-    // Normalize Flash trades
-    const normalizedTrades: NormalizedTrade[] = flashData.map((trade) =>
-      normalizeFlashTrade(trade)
-    );
-
-    return NextResponse.json(normalizedTrades);
+    // Validate response against schema
+    try {
+      const validatedData = FlashTradesResponseSchema.parse(rawData);
+      return NextResponse.json(validatedData);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        console.error("Flash API response validation error:", error.errors);
+        return NextResponse.json(
+          {
+            error: "Invalid response format from Flash API",
+            details: error.errors,
+          },
+          { status: 500 }
+        );
+      }
+      throw error;
+    }
   } catch (error) {
     console.error("Flash trades error:", error);
     return NextResponse.json(

@@ -1,9 +1,10 @@
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
-import { Ratelimit } from "@upstash/ratelimit";
-import { Redis } from "@upstash/redis";
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { Ratelimit } from '@upstash/ratelimit';
+import { Redis } from '@upstash/redis';
+import { isValidSolanaAddress } from './lib/utils/validation';
 
-// Initialize Redis client (you'll get these values from Upstash dashboard)
+// Initialize Redis client
 const redis = new Redis({
   url: process.env.KV_REST_API_URL!,
   token: process.env.KV_REST_API_TOKEN!,
@@ -11,9 +12,9 @@ const redis = new Redis({
 
 // Rate limiter configurations
 const RATE_LIMITS = {
-  GLOBAL: { tokens: 60, interval: "1m" }, // 60 requests per minute
-  TRADING: { tokens: 30, interval: "1m" }, // 30 requests per minute
-  JUPITER: { tokens: 40, interval: "1m" }, // 40 requests per minute
+  GLOBAL: { tokens: 60, interval: '1m' }, // 60 requests per minute
+  TRADING: { tokens: 30, interval: '1m' }, // 30 requests per minute
+  JUPITER: { tokens: 40, interval: '1m' }, // 40 requests per minute
 } as const;
 
 // Initialize rate limiters with Upstash Redis
@@ -23,9 +24,9 @@ const globalLimiter = new Ratelimit({
     RATE_LIMITS.GLOBAL.tokens,
     RATE_LIMITS.GLOBAL.interval
   ),
-  analytics: true, // Enable analytics
-  prefix: "global_ratelimit",
-  timeout: 1000, // Redis timeout in ms
+  analytics: true,
+  prefix: 'global_ratelimit',
+  timeout: 1000,
 });
 
 const tradingLimiter = new Ratelimit({
@@ -76,6 +77,15 @@ function createErrorResponse(
 }
 
 export async function middleware(request: NextRequest) {
+  // Check and validate Solana address in the URL path for [address] routes
+  const addressMatch = request.nextUrl.pathname.match(
+    /^\/([1-9A-HJ-NP-Za-km-z]{32,44})(?:\/.*)?$/
+  );
+  if (addressMatch && !isValidSolanaAddress(addressMatch[1])) {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+
+  // Apply rate limiting
   const ip =
     request.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
   const path = request.nextUrl.pathname;
@@ -83,7 +93,7 @@ export async function middleware(request: NextRequest) {
   try {
     let result;
 
-    if (path.startsWith("/api/jupiter")) {
+    if (path.startsWith("/api/exchanges/jupiter")) {
       result = await jupiterLimiter.limit(`jupiter_${ip}`);
       if (!result.success) {
         return createErrorResponse(
@@ -92,7 +102,7 @@ export async function middleware(request: NextRequest) {
           result.reset
         );
       }
-    } else if (path.startsWith("/api/flash")) {
+    } else if (path.startsWith("/api/exchanges/flash")) {
       result = await tradingLimiter.limit(`trading_${ip}`);
       if (!result.success) {
         return createErrorResponse(
@@ -116,5 +126,11 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*", "/api/flash/:path*", "/api/jupiter/:path*"],
+  // Apply middleware to these paths
+  matcher: [
+    // API routes
+    "/api/:path*",
+    // Address pages (but don't interrupt Next.js static files and images)
+    "/((?!_next/static|_next/image|favicon.ico).*)",
+  ],
 };
